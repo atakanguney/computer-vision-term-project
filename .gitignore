@@ -102,3 +102,11 @@ venv.bak/
 
 # mypy
 .mypy_cache/
+
+# MAC storage
+.DS_Store
+
+# Data
+data/*
+papers/*
+
