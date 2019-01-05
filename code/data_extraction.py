@@ -171,7 +171,7 @@ def find_bboxestime_of_frame(relative_timestamp, end_timestamp, event_bboxtimes_
     return bboxtimes_of_event[idx]
 
 
-def extract_players_from_frames(event_path, event_bboxtimes_map, end_timestamp, bboxes_data):
+def extract_players_from_frames(event_path, event_bboxtimes_map, end_timestamp, bboxes_data, width, height):
     for frame, relative_timestamp in extract_frames_from_event(event_path):
         bboxestime = find_bboxestime_of_frame(
             relative_timestamp, end_timestamp, event_bboxtimes_map)
@@ -179,18 +179,17 @@ def extract_players_from_frames(event_path, event_bboxtimes_map, end_timestamp, 
             "Top-left x", "Top-left y", "Width", "Height", "player-id"]].values
 
         player_regions = extract_players_from_frame(
-            frame, bboxes[:, :4], 490, 360)
+            frame, bboxes[:, :4], width, height)
         player_dict = dict(zip(bboxes[:, 4], player_regions))
 
         yield frame, player_dict
 
 
-def create_events_map(event_data, events_path_list):
+def create_events_map(event_data, events_paths_list):
     # Event path list is assumed to be sorted in event end time
     events_endtime = event_data.sort_values(
         by="EventEndTime").EventEndTime.values
-    events_map = dict(zip((events_endtime * 1000).astype(np.int_),
-                          ["events/event_{}.webm".format(i) for i in range(len(events_endtime))]))
+    events_map = dict(zip((events_endtime * 1000).astype(np.int_), events_paths_list))
 
     return events_map
 
