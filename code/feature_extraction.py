@@ -42,6 +42,10 @@ def preprocess_frame(frame, new_shape, kernel_size, sigma):
     sigma: float
         sigma for gaussian blur
     """
+    
+    if 0 in frame.shape:
+        return np.zeros(new_shape+ (3,))
+    
     blured = cv.GaussianBlur(frame, kernel_size, sigma)
     resized = cv.resize(blured, new_shape)
     
@@ -67,6 +71,29 @@ def extract_frame_features(frame, t_obj, new_shape, kernel_size, sigma):
     preprocessed = preprocess_frame(frame, new_shape, kernel_size, sigma)
     
     preprocessed = np.expand_dims(preprocessed, 0)
+    
+    features = t_obj.eval({t_input: preprocessed})
+    
+    return features.squeeze()
+
+def extract_frame_features_batch(frames, t_obj, new_shape, kernel_size, sigma):
+    """Extract frame features from network object
+    
+    Paramters
+    =========
+    frame: np.float32
+        image to be extracted features assumed in shape [image_height, image_width, 3]
+    t_obj: tf.Tensor
+        tensorflow object to be evaluated
+    new_shape: tuple
+        target resized image
+    kernel_size: tuple
+        kernel size for gaussian blur
+    sigma: float
+        sigma for gaussian blur
+    """
+    preprocessed = np.array([preprocess_frame(frame, new_shape, kernel_size, sigma) for frame in frames])
+    
     
     features = t_obj.eval({t_input: preprocessed})
     
@@ -103,6 +130,33 @@ def extract_appeareance_player(player_region, t_obj, new_shape, kernel_size, sig
     
     return features.reshape(-1)
 
+def extract_appeareance_player_batch(player_regions, t_avg_pool, new_shape, kernel_size, sigma):
+    """Extract appearance feature
+    
+    Parameters
+    ==========
+    player_region: np.float32
+        image of player region
+    t_obj: tf.Tensor
+        tensorflow object to be evaluated
+    new_shape: tuple
+        target resized image
+    kernel_size: tuple
+        kernel size for gaussian blur
+    sigma: float
+        sigma for gaussian blur
+    pool_size: tuple
+        shape of the pool size for average pooling
+    strides: tuple
+        stride
+    """
+    
+    # TODO: Implement region proposals
+    preprocessed = np.array([preprocess_frame(player_region, new_shape, kernel_size, sigma) for player_region in player_regions])
+    
+    features = t_avg_pool.eval({t_input: preprocessed})
+    
+    return features.reshape(len(player_regions), -1)
 
 def pyramid(img, scale, kernel_size, sigma, lower_bound=0):
     yield img
@@ -117,8 +171,58 @@ def pyramid(img, scale, kernel_size, sigma, lower_bound=0):
 
 
 def extract_spatial_feature_from_player_region(player_region, shape, scale, kernel_size, sigma, lower_bound, orientations, pixels_per_cell, cells_per_block, block_norm):
+    if 0 in player_region.shape:
+        player_region = np.zeros(shape)
+        
     features = [feature.hog(img, orientations=orientations, pixels_per_cell=pixels_per_cell, cells_per_block=cells_per_block, block_norm=block_norm) for img in pyramid(cv.resize(player_region, shape), scale, kernel_size, sigma, lower_bound)]
     return np.hstack(features)
+
+def extract_spatial_feature_from_player_region_batch(player_regions,
+                                                      network_shape=(224, 224), 
+                                                      kernel_size=(5, 5), 
+                                                      sigma=0.1, 
+                                                      local_shape=(32, 32), 
+                                                      scale=2, 
+                                                      lower_bound=15, 
+                                                      orientations=18,
+                                                      pixels_per_cell=(4, 4),
+                                                      cells_per_block=(1, 1),
+                                                      block_norm="L1"):
+    """Extract appearance feature
+    
+    Parameters
+    ==========
+    player_region: np.float32
+        image of player region
+    t_obj: tf.Tensor
+        tensorflow object to be evaluated
+    new_shape: tuple
+        target resized image
+    kernel_size: tuple
+        kernel size for gaussian blur
+    sigma: float
+        sigma for gaussian blur
+    pool_size: tuple
+        shape of the pool size for average pooling
+    strides: tuple
+        stride
+    """
+    
+    # TODO: Implement region proposals
+    features = np.array([extract_spatial_feature_from_player_region(player_region,
+                                                                 local_shape,
+                                                                 scale,
+                                                                 kernel_size,
+                                                                 sigma,
+                                                                 lower_bound,
+                                                                 orientations,
+                                                                 pixels_per_cell,
+                                                                 cells_per_block,
+                                                                 block_norm) for player_region in player_regions])
+    
+    
+    return features
+
 
 
 def extract_localized_features_for_person(player_region, 
@@ -218,3 +322,46 @@ def extract_features(event_data, bbox_data, video_id, events_paths_list, width, 
         events.append(event)
 
     return events
+
+def extract_features_batch(event_data, bbox_data, video_id, events_paths_list, width, height):
+    
+    video_events, video_bbox = get_video_data(event_data, bbox_data, video_id)
+    event_map = create_events_map(event_data=video_events, events_paths_list=events_paths_list)
+    reverse_event_map = {value: key for key, value in event_map.items()}
+
+    event_bboxtimes_map = create_eventbboxtimes_map(video_bbox, event_map)
+
+    layer = "avgpool0"
+    t_obj_frame = T(layer)
+
+    layer = "mixed4a"
+    t_obj_player = T(layer)
+    strides = (7, 7)
+    pool_size = (7, 7) 
+    t_avg_pool = tf.layers.average_pooling2d(t_obj_player, pool_size=pool_size, strides=strides, padding="VALID", name="avg_pool")    
+
+    features = []
+    for event_path in events_paths_list:
+        frames, player_dicts = zip(*extract_players_from_frames(event_path, event_bboxtimes_map, reverse_event_map[event_path], video_bbox, width, height))
+        ft = extract_frame_features_batch(frames=frames, kernel_size=(5, 5), new_shape=(224, 224), sigma=0.1, t_obj=t_obj_frame)
+        pts = []
+
+        for player_dict in player_dicts:
+            player_ids, player_regions = zip(*player_dict.items())
+            pt_appereance = extract_appeareance_player_batch(player_regions, t_avg_pool, kernel_size=(5, 5), new_shape=(224, 224), sigma=0.1)
+            pt_spatial = extract_spatial_feature_from_player_region_batch(player_regions)
+            pt = np.concatenate((pt_appereance, pt_spatial), axis=1)
+            pt = {player_id: pt_i for player_id, pt_i in zip(player_ids, pt)}
+
+            pts.append(pt)
+
+
+        features.append(list(zip(list(ft), pts)))
+
+    video_events = video_events.sort_values(by="EventEndTime")
+    labels = video_events.EventLabel.tolist()
+
+
+    return list(zip(features, labels))
+
+
